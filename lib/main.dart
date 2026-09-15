@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:logger/web.dart';
 
 import 'package:mini_farm/mini_farm.dart';
 
@@ -32,16 +33,17 @@ class _HostHomeScreenState extends State<HostHomeScreen> {
   late final FarmConfig _farmConfig = FarmConfig(
     userId: 'demo_user_1',
     appId: 'host_demo',
-    onAnalytics: (event, props) => debugPrint('[analytics] $event $props'),
+    onAnalytics: (event, props) => Logger().d('[analytics] $event $props'),
     onReward: (payload) async => RewardResult.ok(),
   );
 
   @override
   void initState() {
     super.initState();
-    // Tiện ích cho dev/QA trên web: mở thẳng màn nông trại qua ?open=farm,
-    // không phải điểm nhúng thật (host app luôn dùng MiniFarmEntryCard.onTap).
-    if (Uri.base.queryParameters['open'] == 'farm') {
+    // Tiện ích cho dev/QA trên web: mở thẳng màn nông trại (?open=farm) — không
+    // phải điểm nhúng thật (host app luôn dùng MiniFarmEntryCard.onTap).
+    final openParam = Uri.base.queryParameters['open'];
+    if (openParam == 'farm') {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         Navigator.of(context).push(MiniFarm.route(_farmConfig));
       });
@@ -60,7 +62,8 @@ class _HostHomeScreenState extends State<HostHomeScreen> {
             const SizedBox(height: 16),
             MiniFarmEntryCard(
               config: _farmConfig,
-              onTap: () => Navigator.of(context).push(MiniFarm.route(_farmConfig)),
+              onTap: () =>
+                  Navigator.of(context).push(MiniFarm.route(_farmConfig)),
             ),
           ],
         ),

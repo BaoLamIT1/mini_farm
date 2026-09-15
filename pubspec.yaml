@@ -38,7 +38,8 @@ dependencies:
   # mini_farm core deps — xem spec §4.2, giữ tối thiểu để tránh xung đột khi nhúng
   shared_preferences: ^2.3.0
   crypto: ^3.0.0
-
+  xml: ^6.5.0 # parse tileset rời (.tsx) do Tiled export
+  logger: ^2.8.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -60,6 +61,16 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/tiled/mini_farm.tmj
+    - assets/tiled/SuperRetroWorld_Farming_Tileset.tsx
+    - assets/tiled/SuperRetroWorld_Farming_Tileset.png
+    - assets/tiled/SuperRetroWorld_Farming_Autotile_Anim.png
+    - assets/tiled/SuperRetroWorld_Farming_Autotile_Anim.tsx
+    - assets/tiled/Plants.png
+    - assets/tiled/Plants.tsx
+    - assets/tiled/Plant_001.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:

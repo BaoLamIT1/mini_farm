@@ -1,46 +1,65 @@
-import 'dart:math';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../../core/config/crop_catalog.dart';
-import '../../core/config/land_catalog.dart';
-import '../../core/models/plot.dart';
-import '../../visual/visual_registry.dart';
-import 'plot_tile.dart';
+import 'plant_sprite.dart';
+import 'tiled_map_view.dart';
 
-const _mapWidth = 900.0;
-const _mapHeight = 760.0;
-const _tileSize = 108.0;
+const _tiledAssetPath = 'assets/tiled/mini_farm.tmj';
+// Map Tiled gốc 48x48 ô 16px = 768x768px — hiển thị ở 2x cho rõ trên di động.
+const _mapWidth = 1536.0;
+const _mapHeight = 1536.0;
+const _nativeTile = 16.0;
+const _displayScale = _mapWidth / (48 * _nativeTile); // = 2.0
 
-// Vị trí 9 ô đất trong sân vườn — cố tình lệch nhẹ khỏi lưới cứng cho giống
-// bố cục vườn thật, thay vì bảng ô vuông đều tăm tắp.
-const _plotOffsets = [
-  Offset(150, 120), Offset(380, 100), Offset(610, 130),
-  Offset(180, 340), Offset(410, 320), Offset(640, 350),
-  Offset(150, 560), Offset(380, 540), Offset(610, 570),
+// Tâm 8 ô đất của "Soil Plots Layer" (id=5) trong mini_farm.tmj — mỗi ô là 1
+// mảng đất 4x4 tile, góc trên-trái tại các toạ độ lưới gốc (col,row) dưới
+// đây (đọc trực tiếp từ .tmj, xem gid viền 3284/3286/3508/3510). Demo tạm
+// đặt cây cố định vào tâm mỗi ô — hệ trồng cây thật sẽ tính theo state game.
+const _soilPlotTopLeftTiles = [
+  (29, 13),
+  (34, 13),
+  (39, 13),
+  (44, 13),
+  (29, 17),
+  (34, 17),
+  (39, 17),
+  (44, 17),
+];
+const _soilPlotSizeTiles = 0;
+
+// Điểm neo đáy (giữa cạnh dưới) của từng ô đất — cây to nhỏ khác nhau đều
+// "mọc" từ cùng 1 mặt đất nên neo đáy hợp lý hơn neo tâm.
+List<Offset> _soilPlotBottomCenters() => [
+  for (final (col, row) in _soilPlotTopLeftTiles)
+    Offset(
+      (col + _soilPlotSizeTiles / 2) * _nativeTile * _displayScale,
+      (row + _soilPlotSizeTiles) * _nativeTile * _displayScale,
+    ),
 ];
 
-final _grassDots = List.generate(70, (i) {
-  final r = Random(1000 + i);
-  return Offset(r.nextDouble(), r.nextDouble());
-});
+// 5 giai đoạn lớn của Plant_001.png (sheet 256x64) — sheet này KHÔNG phải
+// lưới đều 16px như Plants.png (5 sprite nằm ở toạ độ pixel lệch nhau, xem
+// trả lời trong hội thoại), nên toạ độ dưới đây là bounding-box pixel thật
+// (quét kênh alpha để tìm, không đoán bằng mắt nữa) + đệm 2px mỗi cạnh —
+// tile=1.0 nghĩa là col/row/colSpan/rowSpan ở đây tính thẳng bằng px.
+const _plantSheetPath = 'assets/tiled/Plant_001.png';
+const _plantSheetWidth = 256.0;
+const _plantSheetHeight = 64.0;
+const _plantTile = 1.0;
+const _plantStages = [
+  (col: 3.0, row: 41.0, colSpan: 21.0, rowSpan: 23.0),
+  (col: 29.0, row: 32.0, colSpan: 34.0, rowSpan: 32.0),
+  (col: 75.0, row: 14.0, colSpan: 36.0, rowSpan: 50.0),
+  (col: 131.0, row: 0.0, colSpan: 55.0, rowSpan: 64.0),
+  (col: 195.0, row: 0.0, colSpan: 55.0, rowSpan: 64.0),
+];
 
-/// Bản đồ nông trại kéo/zoom được (kiểu Nông Trại Vui Vẻ) — [InteractiveViewer]
-/// bao một canvas lớn hơn màn hình, các ô đất nằm ở vị trí cố định trên đó
-/// thay vì trong lưới GridView.
+/// Bản đồ nông trại kéo/zoom được — [InteractiveViewer] bao nền vẽ từ map
+/// Tiled ([TiledMapView]). Lớp trồng/thu hoạch (ô đất, cây) sẽ làm lại riêng
+/// bằng Rive/sprite sau, nên widget này hiện chỉ còn thuần phần xem bản đồ.
 class FarmMapView extends StatefulWidget {
-  const FarmMapView({
-    super.key,
-    required this.plots,
-    required this.nowMs,
-    required this.registry,
-    required this.onTapPlot,
-  });
-
-  final List<Plot> plots;
-  final int nowMs;
-  final VisualRegistry registry;
-  final void Function(int index) onTapPlot;
+  const FarmMapView({super.key});
 
   @override
   State<FarmMapView> createState() => _FarmMapViewState();
@@ -56,39 +75,50 @@ class _FarmMapViewState extends State<FarmMapView> {
     super.dispose();
   }
 
-  // Canh giữa bản đồ vào khung nhìn đúng 1 lần khi mở màn — sau đó để yên
-  // vị trí người chơi đang kéo tới, kể cả khi ticker 1s ở FarmScreen rebuild.
-  void _centerOnce(Size viewport) {
+  // Canh giữa bản đồ vào khung nhìn ở đúng scale "phủ kín" (cover) đúng 1 lần
+  // khi mở màn — sau đó để yên vị trí người chơi đang kéo tới.
+  void _centerOnce(Size viewport, double scale) {
     if (_centered) return;
     _centered = true;
-    final dx = ((_mapWidth - viewport.width) / 2).clamp(0.0, _mapWidth);
-    final dy = ((_mapHeight - viewport.height) / 2).clamp(0.0, _mapHeight);
-    _controller.value = Matrix4.translationValues(-dx, -dy, 0);
+    final tx = (viewport.width - _mapWidth * scale) / 2;
+    final ty = (viewport.height - _mapHeight * scale) / 2;
+    _controller.value = Matrix4.identity()
+      ..translateByDouble(tx, ty, 0, 1)
+      ..scaleByDouble(scale, scale, scale, 1);
   }
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        WidgetsBinding.instance.addPostFrameCallback((_) => _centerOnce(constraints.biggest));
+        final viewport = constraints.biggest;
+        // minScale = scale nhỏ nhất mà map vẫn phủ kín khung nhìn (không hở
+        // viền trắng khi kéo/zoom hết cỡ) — maxScale giới hạn zoom vào tối đa
+        // gấp đôi mức đó, tránh vỡ nét pixel art khi phóng quá to.
+        final coverScale = math.max(
+          viewport.width / _mapWidth,
+          viewport.height / _mapHeight,
+        );
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _centerOnce(viewport, coverScale),
+        );
         return InteractiveViewer(
           transformationController: _controller,
           constrained: false,
-          boundaryMargin: const EdgeInsets.all(160),
-          minScale: 0.5,
-          maxScale: 2.2,
+          boundaryMargin: EdgeInsets.zero,
+          minScale: coverScale,
+          maxScale: coverScale * 2,
           child: SizedBox(
             width: _mapWidth,
             height: _mapHeight,
             child: Stack(
               children: [
-                _buildGround(),
-                ..._buildFence(),
-                _decor(const Offset(40, 30), Icons.cottage, 56),
-                _decor(const Offset(_mapWidth - 100, 40), Icons.park, 44),
-                _decor(const Offset(40, _mapHeight - 110), Icons.forest, 44),
-                _decor(const Offset(_mapWidth - 110, _mapHeight - 120), Icons.park, 48),
-                for (var i = 0; i < widget.plots.length && i < _plotOffsets.length; i++) _buildPlot(i),
+                const TiledMapView(
+                  assetPath: _tiledAssetPath,
+                  width: _mapWidth,
+                  height: _mapHeight,
+                ),
+                ..._buildDemoPlants(),
               ],
             ),
           ),
@@ -97,80 +127,38 @@ class _FarmMapViewState extends State<FarmMapView> {
     );
   }
 
-  Widget _buildGround() {
-    return Positioned.fill(
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Colors.green.shade300, Colors.green.shade500],
-          ),
-        ),
-        child: CustomPaint(painter: _GrassTexturePainter(_grassDots)),
-      ),
-    );
+  // Demo: rải đủ 5 giai đoạn lớn của Plant_001 qua 8 ô đất (lặp lại nếu dư ô)
+  // để xem 1 lượt tất cả các cỡ cây có cắt/neo đúng không.
+  List<Widget> _buildDemoPlants() {
+    final centers = _soilPlotBottomCenters();
+    return [
+      for (var i = 0; i < centers.length; i++)
+        _buildDemoPlant(centers[i], _plantStages[i % _plantStages.length]),
+    ];
   }
 
-  List<Widget> _buildFence() {
-    final posts = <Widget>[];
-    const spacing = 70.0;
-    for (var x = 0.0; x < _mapWidth; x += spacing) {
-      posts.add(_fencePost(Offset(x, -18)));
-      posts.add(_fencePost(Offset(x, _mapHeight - 14)));
-    }
-    for (var y = 0.0; y < _mapHeight; y += spacing) {
-      posts.add(_fencePost(Offset(-18, y)));
-      posts.add(_fencePost(Offset(_mapWidth - 14, y)));
-    }
-    return posts;
-  }
-
-  Widget _fencePost(Offset offset) => Positioned(
-        left: offset.dx,
-        top: offset.dy,
-        child: Icon(Icons.fence, size: 26, color: Colors.brown.shade700),
-      );
-
-  Widget _decor(Offset offset, IconData icon, double size) => Positioned(
-        left: offset.dx,
-        top: offset.dy,
-        child: Icon(icon, size: size, color: Colors.brown.shade800),
-      );
-
-  Widget _buildPlot(int index) {
-    final plot = widget.plots[index];
-    final offset = _plotOffsets[index];
-    final cropDef = plot.cropId == null ? null : CropCatalog.tryById(plot.cropId!);
+  Widget _buildDemoPlant(
+    Offset bottomCenter,
+    ({double col, double row, double colSpan, double rowSpan}) stage,
+  ) {
+    final width = stage.colSpan * _plantTile * _displayScale;
+    final height = stage.rowSpan * _plantTile * _displayScale;
     return Positioned(
-      left: offset.dx,
-      top: offset.dy,
-      width: _tileSize,
-      height: _tileSize,
-      child: PlotTile(
-        plot: plot,
-        cropDef: cropDef,
-        nowMs: widget.nowMs,
-        registry: widget.registry,
-        landPrice: LandCatalog.priceFor(index),
-        onTap: () => widget.onTapPlot(index),
+      left: bottomCenter.dx - width / 2,
+      top: bottomCenter.dy - height,
+      width: width,
+      height: height,
+      child: PlantSprite(
+        assetPath: _plantSheetPath,
+        sheetWidth: _plantSheetWidth,
+        sheetHeight: _plantSheetHeight,
+        tile: _plantTile,
+        col: stage.col,
+        row: stage.row,
+        colSpan: stage.colSpan,
+        rowSpan: stage.rowSpan,
+        pixelScale: _displayScale,
       ),
     );
   }
-}
-
-class _GrassTexturePainter extends CustomPainter {
-  const _GrassTexturePainter(this.dots);
-  final List<Offset> dots;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.green.shade700.withValues(alpha: 0.35);
-    for (final d in dots) {
-      canvas.drawCircle(Offset(d.dx * size.width, d.dy * size.height), 3, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _GrassTexturePainter oldDelegate) => false;
 }
